@@ -5,12 +5,12 @@ using System.Text.Json.Nodes;
 
 namespace RubyMarshal.Types
 {
-    public abstract class Indexable:Base
+    public abstract class HashKey:Base
     {
         public abstract override int GetHashCode();
         public abstract override string ToString();
+        public sealed override bool Equals(object? obj) => obj == null ? false : (ToString() == obj.ToString());
     }
-
     public abstract class Base
     {
         public String? AsString() => this as String;
@@ -41,19 +41,19 @@ namespace RubyMarshal.Types
         public abstract JsonNode? ToJson();
 
     }
-    public class Object : Base,IEnumerable<KeyValuePair<Indexable,Base>>
+    public class Object : Base,IEnumerable<KeyValuePair<HashKey,Base>>
     {
         public Base Name { get; private set; }
-        private Dictionary<Indexable, Base> _Elements { get; set; } = new();
+        private Dictionary<HashKey, Base> _Elements { get; set; } = new();
         
-        public Base this[Indexable s]
+        public Base this[HashKey s]
         {
             get => _Elements[s];
         }
 
         public Base this[string s]
         {
-            get => _Elements.First((i) => i.Key.ToString() == s).Value;
+            get => _Elements[String.CreateTempObject(s)];
         }
 
         public int Count => _Elements.Count;
@@ -64,7 +64,7 @@ namespace RubyMarshal.Types
             var count =new Fixnum(br).ToInt32();
             for (int i = 0; i < count; i++)
             {
-                var key = Decoder.ReaderMap[br.ReadByte()].Read(ctx,br) as Indexable;
+                var key = Decoder.ReaderMap[br.ReadByte()].Read(ctx,br) as HashKey;
                 var value = Decoder.ReaderMap[br.ReadByte()].Read(ctx,br);
                 if (key != null)
                     _Elements.Add(key, value);
@@ -83,7 +83,7 @@ namespace RubyMarshal.Types
             return obj;
         }
 
-        public IEnumerator<KeyValuePair<Indexable, Base>> GetEnumerator()=> _Elements.GetEnumerator();
+        public IEnumerator<KeyValuePair<HashKey, Base>> GetEnumerator()=> _Elements.GetEnumerator();
 
         IEnumerator IEnumerable.GetEnumerator()=> _Elements.GetEnumerator();
     }
@@ -131,7 +131,7 @@ namespace RubyMarshal.Types
         }
 
     }
-    public class SymbolLink : Indexable
+    public class SymbolLink : HashKey
     {
         public Symbol Target { get; private set; }
         internal SymbolLink(Decoder ctx, BinaryReader br)
@@ -153,7 +153,7 @@ namespace RubyMarshal.Types
             return Target.GetHashCode(); 
         }
     }
-    public class Symbol : Indexable
+    public class Symbol : HashKey
     {
         public String Name { get; private set; }
         internal Symbol(Decoder ctx,BinaryReader br)
@@ -168,6 +168,8 @@ namespace RubyMarshal.Types
         {
             return ToString();
         }
+
+
     }
     public class Nil : Base
     {
@@ -214,17 +216,17 @@ namespace RubyMarshal.Types
             return Value;
         }
     }
-    public class InstanceVariable : Base, IEnumerable<KeyValuePair<Indexable, Base>>
+    public class InstanceVariable : Base, IEnumerable<KeyValuePair<HashKey, Base>>
     {
         public Base Name { get; private set; }
-        private Dictionary<Indexable, Base> _Elements { get; set; } = new();
-        public Base this[Indexable s]
+        private Dictionary<HashKey, Base> _Elements { get; set; } = new();
+        public Base this[HashKey s]
         {
             get => _Elements[s];
         }
         public Base this[string s]
         {
-            get => _Elements.First((i) => i.ToString() == s).Value;
+            get => _Elements[String.CreateTempObject(s)];
         }
         public int Count => _Elements.Count;
         internal InstanceVariable(Decoder ctx,BinaryReader br)
@@ -234,7 +236,7 @@ namespace RubyMarshal.Types
             var count = new Fixnum(br).ToInt32();
             for (int i = 0; i < count; i++)
             {
-                var key = Decoder.ReaderMap[br.ReadByte()].Read(ctx,br) as Indexable;
+                var key = Decoder.ReaderMap[br.ReadByte()].Read(ctx,br) as HashKey;
                 var value = Decoder.ReaderMap[br.ReadByte()].Read(ctx,br);
                 if (key != null)
                     _Elements.Add(key, value);
@@ -256,7 +258,7 @@ namespace RubyMarshal.Types
 
         public IEnumerator GetEnumerator() => _Elements.GetEnumerator();
 
-        IEnumerator<KeyValuePair<Indexable, Base>> IEnumerable<KeyValuePair<Indexable, Base>>.GetEnumerator() => _Elements.GetEnumerator();
+        IEnumerator<KeyValuePair<HashKey, Base>> IEnumerable<KeyValuePair<HashKey, Base>>.GetEnumerator() => _Elements.GetEnumerator();
     }
     public class Extended : Base
     {
@@ -271,7 +273,7 @@ namespace RubyMarshal.Types
             return Name.ToJson();
         }
     }
-    public class Fixnum : Indexable
+    public class Fixnum : HashKey
     {
         public long Value { get; private set; }
 
@@ -362,9 +364,17 @@ namespace RubyMarshal.Types
             return Value.GetHashCode();
         }
     }
-    public class String : Indexable
+    public class String : HashKey
     {
         public string Value { get; private set; }
+        private String(string str)
+        {
+            Value = str;
+        }
+        internal static String CreateTempObject(string s)
+        {
+            return new String(s);
+        }
         internal String(Decoder ctx, BinaryReader br)
         {
             ctx.ObjectList.Add(this);
@@ -382,15 +392,15 @@ namespace RubyMarshal.Types
     public class Float : Base
     {
         private string _Data;
-        public double Value
-        {
-            get=> double.Parse(_Data);
-            set=>_Data = value.ToString();
-        }
+        public double Value { get; private set; }
         internal Float(Decoder ctx, BinaryReader br)
         {
             ctx.ObjectList.Add(this);
-            _Data = new String(ctx,br).ToString();
+            var length = new Fixnum(br).ToInt32();
+            var str = Encoding.ASCII.GetString(br.ReadBytes(length));
+            int index = str.IndexOf('\0');
+            _Data = index == -1 ? str : str.Substring(0, index);
+            Value = double.Parse(_Data);
         }
         public override string ToString() => _Data;
 
@@ -410,18 +420,18 @@ namespace RubyMarshal.Types
             throw new NotImplementedException();
         }
     }
-    public class Hash : Base,IEnumerable<KeyValuePair<Indexable, Base>>
+    public class Hash : Base,IEnumerable<KeyValuePair<HashKey, Base>>
     {
-        private Dictionary<Indexable, Base> _Elements { get; set; } = new();
+        private Dictionary<HashKey, Base> _Elements { get; set; } = new();
 
-        public Base this[Indexable s]
+        public Base this[HashKey s]
         {
             get => _Elements[s];
         }
 
         public Base this[string s]
         {
-            get => _Elements.First((i) => i.ToString() == s).Value;
+            get => _Elements[String.CreateTempObject(s)];
         }
         internal Hash(Decoder ctx,BinaryReader br)
         {
@@ -429,7 +439,7 @@ namespace RubyMarshal.Types
             var count = new Fixnum(br).ToInt32();
             for(int i = 0; i < count; i++)
             {
-                var key = Decoder.ReaderMap[br.ReadByte()].Read(ctx, br) as Indexable;
+                var key = Decoder.ReaderMap[br.ReadByte()].Read(ctx, br) as HashKey;
                 var value = Decoder.ReaderMap[br.ReadByte()].Read(ctx, br);
                 if (key != null)
                     _Elements.Add(key, value);
@@ -445,7 +455,7 @@ namespace RubyMarshal.Types
             return obj;
         }
 
-        public IEnumerator<KeyValuePair<Indexable, Base>> GetEnumerator() => _Elements.GetEnumerator();
+        public IEnumerator<KeyValuePair<HashKey, Base>> GetEnumerator() => _Elements.GetEnumerator();
 
         IEnumerator IEnumerable.GetEnumerator() => _Elements.GetEnumerator();
     }
