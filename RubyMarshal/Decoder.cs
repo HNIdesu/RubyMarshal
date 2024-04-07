@@ -24,7 +24,7 @@ namespace RubyMarshal
             {(byte)'{',new HashReader() },
             {(byte)'@',new ObjectReferencesReader() },
             {(byte)'u',new UserDefinedReader() },
-            {(byte)'/',new RegexReader()},
+            {(byte)'/',new RegexpReader()},
             {(byte)'S',new StructReader() },
             {(byte)'C',new UserClassReader() },
             {(byte)'U',new UserMarshalReader() },
@@ -33,18 +33,18 @@ namespace RubyMarshal
             {(byte)'c',new ClassReader() },
         };
         public List<Symbol> SymbolList { get; private set; } = [];
-        public List<Base> ObjectList { get; private set; } = [];
+        public List<Base> ObjectReferenceList { get; private set; } = [];
 
-        private Decoder(){}
+        public Decoder(){}
 
-        public static Base Decode(Stream utf8Stream)
+        public Base Decode(Stream stream)
         {
-            using (var br=new BinaryReader(utf8Stream))
+            using (var br=new BinaryReader(stream))
             {
                 var signature = br.ReadInt16();
                 if (signature != 0x0804)
                     throw new Exception("signature mismatch");
-                return ReaderMap[br.ReadByte()].Read(new Decoder(),br);
+                return ReaderMap[br.ReadByte()].Read(this,br,true);
             }
                 
         }

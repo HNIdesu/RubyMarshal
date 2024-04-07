@@ -2,22 +2,31 @@
 using System.Numerics;
 using System.Text;
 using System.Text.Json.Nodes;
+using System.Text.RegularExpressions;
 
 namespace RubyMarshal.Types
 {
     public abstract class HashKey:Base
     {
         public abstract override int GetHashCode();
-        public abstract override string ToString();
-        public sealed override bool Equals(object? obj) => obj == null ? false : (ToString() == obj.ToString());
+        public abstract object GetUniqueValue();
+        public sealed override bool Equals(object? obj)
+        {
+            var other = obj as HashKey;
+            if (other==null)
+                return false;
+            object uv1 = GetUniqueValue(), uv2 = other.GetUniqueValue();
+            if (uv1.GetType() != uv2.GetType())
+                return false;
+            return uv1.Equals(uv2); 
+        }
     }
-    public abstract class Base
+    public abstract class Base:IJsonSerialzable
     {
         public String? AsString() => this as String;
         public Fixnum? AsFixnum() => this as Fixnum;
         public Float? AsFloat() => this as Float;
         public Symbol? AsSymbol() => this as Symbol;
-        public Bignum? AsBigNumber() => this as Bignum;
         public Array? AsArray() => this as Array;
         public Object? AsObject() => this as Object;
         public Data? AsData() => this as Data;
@@ -31,21 +40,23 @@ namespace RubyMarshal.Types
         public UserDefined? AsUserDefined() => this as UserDefined;
         public Extended? AsExtended() => this as Extended;
         public InstanceVariable? AsInstanceVariable() => this as InstanceVariable;
-        public Regex? AsRegex() => this as Regex;
+        public Regexp? AsRegex() => this as Regexp;
         public UserClass? AsUserClass() => this as UserClass;
         public UserMarshal? AsUserMarshal() => this as UserMarshal;
         public DefaultHash? AsDefaultHash() => this as DefaultHash;
         public Module? AsModule() => this as Module;
         public Class? AsClass() => this as Class;
         public Struct? AsStruct() => this as Struct;
-        public abstract JsonNode? ToJson();
 
+        public abstract JsonNode? ToJson();
     }
-    public class Object : Base,IEnumerable<KeyValuePair<HashKey,Base>>
+    [AddRef]
+    public class Object :Base,IEnumerable<KeyValuePair<HashKey,Base>>
     {
+        public bool ContainsKey(HashKey s) => _Elements.ContainsKey(s);
+        public bool ContainsKey(string s) => _Elements.ContainsKey(new String(s));
         public Base Name { get; private set; }
         private Dictionary<HashKey, Base> _Elements { get; set; } = new();
-        
         public Base this[HashKey s]
         {
             get => _Elements[s];
@@ -53,19 +64,20 @@ namespace RubyMarshal.Types
 
         public Base this[string s]
         {
-            get => _Elements[String.CreateTempObject(s)];
+            get => _Elements[new String(s)];
         }
 
         public int Count => _Elements.Count;
-        internal Object(Decoder ctx, BinaryReader br)
+        internal Object(Decoder ctx, BinaryReader br,bool addToObjectReferenceList)
         {
-            ctx.ObjectList.Add(this);
-            Name = Decoder.ReaderMap[br.ReadByte()].Read(ctx,br)!;
+            if(addToObjectReferenceList)
+                ctx.ObjectReferenceList.Add(this);
+            Name = Decoder.ReaderMap[br.ReadByte()].Read(ctx,br,true)!;
             var count =new Fixnum(br).ToInt32();
             for (int i = 0; i < count; i++)
             {
-                var key = Decoder.ReaderMap[br.ReadByte()].Read(ctx,br) as HashKey;
-                var value = Decoder.ReaderMap[br.ReadByte()].Read(ctx,br);
+                var key = Decoder.ReaderMap[br.ReadByte()].Read(ctx,br,true) as HashKey;
+                var value = Decoder.ReaderMap[br.ReadByte()].Read(ctx,br,true);
                 if (key != null)
                     _Elements.Add(key, value);
                 else
@@ -79,7 +91,7 @@ namespace RubyMarshal.Types
                 ["class"] = Name.ToJson()
             };
             foreach(var pair in _Elements)
-                obj.Add(pair.Key.ToString(), pair.Value?.ToJson());
+                obj.Add(pair.Key.GetUniqueValue().ToString()!, pair.Value!.ToJson());
             return obj;
         }
 
@@ -93,41 +105,33 @@ namespace RubyMarshal.Types
         internal ObjectReferences(Decoder ctx, BinaryReader br)
         {
             var index = new Fixnum(br).ToInt32();
-            Target = ctx.ObjectList[index];
+            Target = ctx.ObjectReferenceList[index];
         }
 
-        public override JsonNode? ToJson()
-        {
-            return Target.ToJson();
-        }
+        public override JsonNode? ToJson()=> Target.ToJson();
     }
-    public class Array : Base,IEnumerable<Base>
+    [AddRef]
+    public class Array : Base, IEnumerable<Base>
     {
-        private List<Base> _Data = new(1);
-        public int Count => _Data.Count;
-        internal Array(Decoder ctx,BinaryReader br)
+        private List<Base> _Elements = new(1);
+        public int Count => _Elements.Count;
+        internal Array(Decoder ctx,BinaryReader br,bool addToObjectReferenceList)
         {
-            ctx.ObjectList.Add(this);
+            if(addToObjectReferenceList)
+                ctx.ObjectReferenceList.Add(this);
             var count = new Fixnum(br).ToInt32();
             for (int i = 0; i < count; i++)
-                _Data.Add(Decoder.ReaderMap[br.ReadByte()].Read(ctx,br));
+                _Elements.Add(Decoder.ReaderMap[br.ReadByte()].Read(ctx,br,true));
         }
 
-        public IEnumerator<Base> GetEnumerator() => _Data.GetEnumerator();
+        public IEnumerator<Base> GetEnumerator() => _Elements.GetEnumerator();
+        IEnumerator IEnumerable.GetEnumerator()=> _Elements.GetEnumerator();
 
-        IEnumerator IEnumerable.GetEnumerator()=> _Data.GetEnumerator();
-
-        public override JsonNode ToJson()
-        {
-            var arr = new JsonArray();
-            foreach(var ele in _Data)
-                arr.Add(ele.ToJson());
-            return arr;
-        }
+        public override JsonNode ToJson()=> new JsonArray(_Elements.Select(ele => ele.ToJson()).ToArray());
 
         public Base this[int index]
         {
-            get => _Data[index];
+            get => _Elements[index];
         }
 
     }
@@ -139,107 +143,91 @@ namespace RubyMarshal.Types
             var index = new Fixnum(br).ToInt32();
             Target = ctx.SymbolList[index];
         }
-        public override string ToString()
-        {
-            return Target.ToString();
-        }
-        public override JsonNode? ToJson()
-        {
-            return Target.ToJson();
-        }
+        public override JsonNode? ToJson()=> Target.ToJson();
 
-        public override int GetHashCode()
-        {
-            return Target.GetHashCode(); 
-        }
+        public override int GetHashCode()=> Target.GetHashCode();
+
+        public override object GetUniqueValue() => Target.GetUniqueValue();
+
     }
     public class Symbol : HashKey
     {
-        public String Name { get; private set; }
+        public string Name { get; private set; }
         internal Symbol(Decoder ctx,BinaryReader br)
         {
-            Name = new String(ctx,br);
-            ctx.SymbolList.Add(this);
+            ctx?.SymbolList.Add(this);
+            var strlen = new Fixnum(br).ToInt32();
+            Name = Encoding.UTF8.GetString(br.ReadBytes(strlen));
         }
         public override int GetHashCode()=> Name.GetHashCode();
-
-        public override string ToString()=>Name.ToString();
-        public override JsonNode? ToJson()
-        {
-            return ToString();
-        }
-
-
+        public override JsonNode? ToJson() => Name;
+        public override object GetUniqueValue() => Name;
     }
     public class Nil : Base
     {
-        internal Nil(BinaryReader _){}
-
-        public override JsonNode? ToJson()
-        {
-            return null;
-        }
+        internal Nil(){}
+        public override JsonNode? ToJson() => null;
     }
+    [AddRef]
     public class Bignum : Base
     {
         public BigInteger Value { get; private set; }
-        internal Bignum(Decoder ctx,BinaryReader br)
+        internal Bignum(Decoder ctx,BinaryReader br, bool addToObjectReferenceList)
         {
-            throw new NotImplementedException();
+            if(addToObjectReferenceList)
+                ctx.ObjectReferenceList.Add(this);
+            var sign = br.ReadByte();
+            var length = new Fixnum(br).ToInt32()*2;
+            var temp= new BigInteger(br.ReadBytes(length));
+            if (sign == (byte)'+')
+                Value = temp;
+            else if (sign == (byte)'-')
+                Value = -temp;
+            else
+                throw new NotSupportedException();
         }
-        public override string ToString()
-        {
-            return Value.ToString();
-        }
-        public override JsonNode? ToJson()
-        {
-            return Value.ToString();
-        }
+        public override JsonNode? ToJson() => Value.ToString();
     }
     public class True : Base
     {
         public const bool Value = true;
-        internal True(BinaryReader _){}
-
-        public override JsonNode? ToJson()
-        {
-            return Value;
-        }
+        internal True(){}
+        public override JsonNode? ToJson() => Value;
     }
     public class False : Base
     {
-        public const bool Value = true;
-        internal False(BinaryReader _) { }
-
-        public override JsonNode? ToJson()
-        {
-            return Value;
-        }
+        public const bool Value = false;
+        internal False() {}
+        public override JsonNode? ToJson() => Value;
     }
-    public class InstanceVariable : Base, IEnumerable<KeyValuePair<HashKey, Base>>
+    [AddRef]
+    public class InstanceVariable: HashKey, IEnumerable<KeyValuePair<HashKey, Base>>
     {
-        public Base Name { get; private set; }
-        private Dictionary<HashKey, Base> _Elements { get; set; } = new();
+        public bool ContainsKey(HashKey s) => _Properties.ContainsKey(s);
+        public bool ContainsKey(string s) => _Properties.ContainsKey(new String(s));
+        public Base Base { get; private set; }
+        private Dictionary<HashKey, Base> _Properties { get; set; } = new();
         public Base this[HashKey s]
         {
-            get => _Elements[s];
+            get => _Properties[s];
         }
         public Base this[string s]
         {
-            get => _Elements[String.CreateTempObject(s)];
+            get => _Properties[new String(s)];
         }
-        public int Count => _Elements.Count;
-        internal InstanceVariable(Decoder ctx,BinaryReader br)
+        public int Count => _Properties.Count;
+        internal InstanceVariable(Decoder ctx,BinaryReader br, bool addToObjectReferenceList)
         {
-            ctx.ObjectList.Add(this);
-            Name = Decoder.ReaderMap[br.ReadByte()].Read(ctx,br)!;
+            if(addToObjectReferenceList)
+                ctx.ObjectReferenceList.Add(this);
+            Base = Decoder.ReaderMap[br.ReadByte()].Read(ctx,br,false)!;
             var count = new Fixnum(br).ToInt32();
             for (int i = 0; i < count; i++)
             {
-                var key = Decoder.ReaderMap[br.ReadByte()].Read(ctx,br) as HashKey;
-                var value = Decoder.ReaderMap[br.ReadByte()].Read(ctx,br);
+                var key = Decoder.ReaderMap[br.ReadByte()].Read(ctx,br,true) as HashKey;
+                var value = Decoder.ReaderMap[br.ReadByte()].Read(ctx,br,true);
                 if (key != null)
-                    _Elements.Add(key, value);
+                    _Properties.Add(key, value);
                 else
                     throw new NotSupportedException(); 
 
@@ -247,36 +235,48 @@ namespace RubyMarshal.Types
         }
         public override JsonNode? ToJson()
         {
-            var obj = new JsonObject
+            var obj = new JsonObject()
             {
-                { "class", Name.ToJson() }
+                ["base"] = Base.ToJson()
             };
-            foreach (var pair in _Elements)
-                obj.Add(pair.Key.ToString()!, pair.Value?.ToJson());
+            foreach (var item in _Properties)
+                obj[item.Key.GetUniqueValue().ToString()!] = item.Value.ToJson();
             return obj;
         }
 
-        public IEnumerator GetEnumerator() => _Elements.GetEnumerator();
+        public IEnumerator GetEnumerator() => _Properties.GetEnumerator();
 
-        IEnumerator<KeyValuePair<HashKey, Base>> IEnumerable<KeyValuePair<HashKey, Base>>.GetEnumerator() => _Elements.GetEnumerator();
+        IEnumerator<KeyValuePair<HashKey, Base>> IEnumerable<KeyValuePair<HashKey, Base>>.GetEnumerator() => _Properties.GetEnumerator();
+
+        public override int GetHashCode()=>((HashKey) Base).GetHashCode();
+
+        public override object GetUniqueValue() => ((HashKey)Base).GetUniqueValue();
     }
+    [AddRef]
     public class Extended : Base
     {
-        public Symbol Name { get; private set; }
-        internal Extended(Decoder ctx,BinaryReader br)
+        public Base Base { get; private set; }
+        public Base Value { get; private set; }
+        internal Extended(Decoder ctx,BinaryReader br,bool addToObjectReferenceList)
         {
-            throw new NotImplementedException();
+            if (addToObjectReferenceList)
+                ctx.ObjectReferenceList.Add(this); 
+            Base = Decoder.ReaderMap[br.ReadByte()].Read(ctx, br, true);
+            Value = Decoder.ReaderMap[br.ReadByte()].Read(ctx, br, true);
         }
 
         public override JsonNode? ToJson()
         {
-            return Name.ToJson();
+            return new JsonObject
+            {
+                ["base"]=Base.ToJson(),
+                ["value"]=Value.ToJson()
+            };
         }
     }
     public class Fixnum : HashKey
     {
         public long Value { get; private set; }
-
         internal Fixnum(BinaryReader br)
         {
             byte b = br.ReadByte();
@@ -352,66 +352,59 @@ namespace RubyMarshal.Types
                 throw new InvalidCastException();
             return (short)Value;
         }
-        public override string ToString() => Value.ToString();
 
-        public override JsonNode? ToJson()
+        public Fixnum(long val)
         {
-            return Value;
+            Value = val;
         }
-
-        public override int GetHashCode()
-        {
-            return Value.GetHashCode();
-        }
+        public override JsonNode? ToJson() => Value;
+        public override int GetHashCode()=> Value.GetHashCode();
+        public override object GetUniqueValue() => Value;
     }
+    [AddRef]
     public class String : HashKey
     {
         public string Value { get; private set; }
-        private String(string str)
+        internal String(string str)
         {
             Value = str;
         }
-        internal static String CreateTempObject(string s)
+        internal String(Decoder ctx, BinaryReader br, bool addToObjectReferenceList)
         {
-            return new String(s);
-        }
-        internal String(Decoder ctx, BinaryReader br)
-        {
-            ctx.ObjectList.Add(this);
+            if(addToObjectReferenceList)
+                ctx.ObjectReferenceList.Add(this);
             var strlen = new Fixnum(br).ToInt32();
             Value = Encoding.UTF8.GetString(br.ReadBytes(strlen));
         }
-        public override string ToString() => Value;
+        
         public override int GetHashCode() => Value.GetHashCode();
 
-        public override JsonNode? ToJson()
-        {
-            return Value;
-        }
+        public override JsonNode? ToJson() => Value;
+
+        public override object GetUniqueValue() => Value;
     }
+    [AddRef]
     public class Float : Base
     {
         private string _Data;
         public double Value { get; private set; }
-        internal Float(Decoder ctx, BinaryReader br)
+        internal Float(Decoder ctx, BinaryReader br, bool addToObjectReferenceList)
         {
-            ctx.ObjectList.Add(this);
+            if(addToObjectReferenceList)
+                ctx.ObjectReferenceList.Add(this);
             var length = new Fixnum(br).ToInt32();
             var str = Encoding.ASCII.GetString(br.ReadBytes(length));
             int index = str.IndexOf('\0');
-            _Data = index == -1 ? str : str.Substring(0, index);
+            _Data = index == -1 ? str : str[0..index];
             Value = double.Parse(_Data);
         }
-        public override string ToString() => _Data;
 
-        public override JsonNode ToJson()
-        {
-            return Value;
-        }
+        public override JsonNode ToJson() => Value;
     }
+    [AddRef]
     public class Data : Base
     {
-        internal Data(Decoder ctx,BinaryReader br)
+        internal Data(Decoder ctx,BinaryReader br, bool addToObjectReferenceList)
         {
             throw new NotImplementedException();
         }
@@ -420,27 +413,36 @@ namespace RubyMarshal.Types
             throw new NotImplementedException();
         }
     }
+    [AddRef]
     public class Hash : Base,IEnumerable<KeyValuePair<HashKey, Base>>
     {
         private Dictionary<HashKey, Base> _Elements { get; set; } = new();
-
-        public Base this[HashKey s]
+        public bool ContainsKey(HashKey s) => _Elements.ContainsKey(s);
+        public bool ContainsKey(string s) => _Elements.ContainsKey(new String(s));
+        public bool ContainsKey(int s) => _Elements.ContainsKey(new Fixnum(s));
+        public virtual Base this[HashKey s]
         {
             get => _Elements[s];
         }
 
+        public Base this[int index]
+        {
+            get => this[new Fixnum(index)];
+        }
+
         public Base this[string s]
         {
-            get => _Elements[String.CreateTempObject(s)];
+            get => this[new String(s)];
         }
-        internal Hash(Decoder ctx,BinaryReader br)
+        internal Hash(Decoder ctx,BinaryReader br, bool addToObjectReferenceList)
         {
-            ctx.ObjectList.Add(this);
+            if(addToObjectReferenceList)
+                ctx.ObjectReferenceList.Add(this);
             var count = new Fixnum(br).ToInt32();
             for(int i = 0; i < count; i++)
             {
-                var key = Decoder.ReaderMap[br.ReadByte()].Read(ctx, br) as HashKey;
-                var value = Decoder.ReaderMap[br.ReadByte()].Read(ctx, br);
+                var key = Decoder.ReaderMap[br.ReadByte()].Read(ctx, br,true) as HashKey;
+                var value = Decoder.ReaderMap[br.ReadByte()].Read(ctx, br,true);
                 if (key != null)
                     _Elements.Add(key, value);
                 else
@@ -451,7 +453,7 @@ namespace RubyMarshal.Types
         {
             var obj = new JsonObject();
             foreach (var pair in _Elements)
-                obj.Add(pair.Key.ToString(), pair.Value?.ToJson());
+                obj.Add(pair.Key.GetUniqueValue().ToString()!, pair.Value?.ToJson());
             return obj;
         }
 
@@ -459,42 +461,70 @@ namespace RubyMarshal.Types
 
         IEnumerator IEnumerable.GetEnumerator() => _Elements.GetEnumerator();
     }
-    public class Regex : Base
+    [AddRef]
+    public class Regexp : Base
     {
-        internal Regex(Decoder ctx, BinaryReader br)
+        public Regex Value { get; private set; }
+        internal Regexp(Decoder ctx, BinaryReader br, bool addToObjectReferenceList)
         {
-            throw new NotImplementedException();
+            if(addToObjectReferenceList)
+                ctx.ObjectReferenceList.Add(this);
+            var strlen = new Fixnum(br).ToInt32();
+            var pattern = Encoding.UTF8.GetString(br.ReadBytes(strlen));
+            var options = RegexOptions.None;
+            int b = br.ReadByte();
+            if ((b & 1) != 0)
+                options |= RegexOptions.IgnoreCase;
+            if ((b & 2) != 0)
+                options |= RegexOptions.IgnorePatternWhitespace;
+            if ((b & 4) != 0)
+                options |= RegexOptions.Multiline;
+            Value = new Regex(pattern, options);     
         }
         public override JsonNode? ToJson()
         {
-            throw new NotImplementedException();
+            StringBuilder sb = new StringBuilder($"/{Value}/");
+            var options = Value.Options;
+            if (options.HasFlag(RegexOptions.Multiline))
+                sb.Append('m');
+            if (options.HasFlag(RegexOptions.IgnoreCase))
+                sb.Append('i');
+            if (options.HasFlag(RegexOptions.IgnorePatternWhitespace))
+                sb.Append('x');
+            return sb.ToString();
         }
     }
-    public class Struct : Base
+    [AddRef]
+    public class Struct : Object
     {
-        internal Struct(Decoder ctx, BinaryReader br)
-        {
-            throw new NotImplementedException();
-        }
-        public override JsonNode? ToJson()
-        {
-            throw new NotImplementedException();
-        }
+        internal Struct(Decoder ctx, BinaryReader br, bool addToObjectReferenceList) : base(ctx, br,addToObjectReferenceList) { }
     }
+    [AddRef]
     public class UserClass : Base
     {
-        internal UserClass(Decoder ctx,BinaryReader br)
+        public Base Name { get; private set; }
+        public Base Base { get; private set; }
+        internal UserClass(Decoder ctx,BinaryReader br, bool addToObjectReferenceList)
         {
-            throw new NotImplementedException();
+            if(addToObjectReferenceList)
+                ctx.ObjectReferenceList.Add(this);
+            Name = Decoder.ReaderMap[br.ReadByte()].Read(ctx, br,true);
+            Base= Decoder.ReaderMap[br.ReadByte()].Read(ctx, br,true);
         }
+
         public override JsonNode? ToJson()
         {
-            throw new NotImplementedException();
+            return new JsonObject()
+            {
+                ["class"] = Name.ToJson(),
+                ["base"] = Base.ToJson()
+            };
         }
     }
+    [AddRef]
     public class UserMarshal : Base
     {
-        internal UserMarshal(Decoder ctx, BinaryReader br)
+        internal UserMarshal(Decoder ctx, BinaryReader br, bool addToObjectReferenceList)
         {
             throw new NotImplementedException();
         }
@@ -503,48 +533,60 @@ namespace RubyMarshal.Types
             throw new NotImplementedException();
         }
     }
-    public class DefaultHash : Base
+    [AddRef]
+    public class DefaultHash : Hash
     {
-        internal DefaultHash(Decoder ctx, BinaryReader br)
+        public Base DefaultValue { get; private set; }
+        internal DefaultHash(Decoder ctx, BinaryReader br, bool addToObjectReferenceList) :base(ctx,br,addToObjectReferenceList)
         {
-            throw new NotImplementedException();
+            DefaultValue = Decoder.ReaderMap[br.ReadByte()].Read(ctx,br,true);
         }
-        public override JsonNode? ToJson()
+        public sealed override Base this[HashKey s]
         {
-            throw new NotImplementedException();
+            get
+            {
+                if (!ContainsKey(s))
+                    return DefaultValue;
+                else
+                    return base[s];
+            }
         }
     }
-    public class Module : Base
+    [AddRef]
+    public class Module : Class
     {
-        internal Module(Decoder ctx, BinaryReader br)
-        {
-            throw new NotImplementedException();
-        }
-        public override JsonNode? ToJson()
-        {
-            throw new NotImplementedException();
-        }
+        internal Module(Decoder ctx, BinaryReader br, bool addToObjectReferenceList) : base(ctx, br,addToObjectReferenceList){}
     }
+    [AddRef]
     public class Class : Base
     {
-        internal Class(Decoder ctx, BinaryReader br)
+        public string Name { get; private set; }
+        internal Class(Decoder ctx, BinaryReader br, bool addToObjectReferenceList)
         {
-            throw new NotImplementedException();
+            if(addToObjectReferenceList)
+                ctx.ObjectReferenceList.Add(this);
+            var strlen = new Fixnum(br).ToInt32();
+            Name = Encoding.UTF8.GetString(br.ReadBytes(strlen));
         }
         public override JsonNode? ToJson()
         {
-            throw new NotImplementedException();
+            return new JsonObject()
+            {
+                ["class"] = Name
+            };
         }
     }
+    [AddRef]
     public class UserDefined : Base
     {
         public Base Name { get; private set; }
         public byte[] RawData { get; private set; }
 
-        internal UserDefined(Decoder ctx,BinaryReader br)
+        internal UserDefined(Decoder ctx,BinaryReader br, bool addToObjectReferenceList)
         {
-            ctx.ObjectList.Add(this);
-            Name = Decoder.ReaderMap[br.ReadByte()].Read(ctx, br);
+            if(addToObjectReferenceList)
+                ctx.ObjectReferenceList.Add(this);
+            Name = Decoder.ReaderMap[br.ReadByte()].Read(ctx, br,true);
             RawData = br.ReadBytes(new Fixnum(br).ToInt32());
         }
 

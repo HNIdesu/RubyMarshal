@@ -1,4 +1,4 @@
-### Current Supported types
+### All marshal types
 | Token | Type |
 | --- | --- |
 | " | String |
@@ -14,18 +14,21 @@
 | f | Float |
 | { | Hash |
 | @ | Object References |
+| } | Default Hash |
+| / | Regexp |
+| l | Bignum |
+| S | Struct |
+| c | Class |
+| m | Module |
+| C | User Class |
+| e | Extended |
+| U | User Marshal |
+| d | Data |
 | u | User Defined |
+| e | Extended |
 
-### Not Supported Types
+### Not supported types
 | Token | Type |
 | --- | --- |
-| e | Extended |
-| l | Bignum |
-| / | Regex |
-| S | Struct |
-| C | User Class |
 | U | User Marshal |
-| } | Default Hash |
-| m | Module |
-| c | Class |
 | d | Data |
